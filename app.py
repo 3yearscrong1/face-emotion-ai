@@ -20,16 +20,18 @@ def load_emotion_model():
     model_path = 'emotion_resnet18.pth'
     
     # 서버에 모델 파일이 없으면 구글 드라이브에서 자동으로 다운로드 시도
+    # 서버에 모델 파일이 없으면 구글 드라이브에서 자동으로 다운로드 시도
     if not os.path.exists(model_path):
         with st.spinner("🚀 AI 두뇌(모델 파일)를 원격 서버에서 안전하게 로드하는 중입니다. 최초 1회만 진행됩니다..."):
-            # ⚠️ [필수 수정] 아래 따옴표 안에 본인의 구글 드라이브 파일 ID를 입력하세요!
-            FILE_ID = '108oEl1sGNwfLW4nhViiSCelkRH1TGsiM'
+            # 링크 분리 없이 다이렉트 다운로드 주소를 통째로 박아버립니다!
+            download_url = 'https://drive.google.com/uc?export=download&id=108oEl1sGNwfLW4nhViiSCelkRH1TGsiM'
             
-            # 구글 드라이브 다이렉트 다운로드 URL 생성
-            download_url = f'https://drive.google.com/uc?export=download&id={FILE_ID}'
+            # 보안 차단 방지를 위한 브라우저 가짜 헤더 추가 (매우 중요)
+            opener = urllib.request.build_opener()
+            opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+            urllib.request.install_opener(opener)
+            
             urllib.request.urlretrieve(download_url, model_path)
-            
-    # 코랩에서 썼던 ResNet-18 구조 그대로 가중치 입히기
     model = models.resnet18()
     model.fc = nn.Linear(model.fc.in_features, 7)
     model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
