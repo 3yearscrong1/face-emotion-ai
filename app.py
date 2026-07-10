@@ -7,47 +7,30 @@ from PIL import Image
 import numpy as np
 import altair as alt
 import os
-import requests
+import urllib.request
 
 # 1. 페이지 제목 및 레이아웃 설정
 st.set_page_config(page_title="AI 표정 감정 인식기", layout="centered")
 st.title("🔮 7개 표정 기반 AI 감정 분석기")
 st.write("당신의 사진을 업로드하면 AI가 실시간으로 감정을 분석합니다.")
 
-# 대용량 구글 드라이브 파일 다운로드 함수 정의
-def download_file_from_google_drive(id, destination):
-    URL = "https://docs.google.com/uc?export=download"
-    session = requests.Session()
-    response = session.get(URL, params={'id': id}, stream=True)
-    token = None
-    
-    # 구글이 보내는 쿠키에서 대용량 경고 우회 토큰 찾기
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            token = value
-            break
-
-    # 우회 토큰이 있다면 주소에 실어서 재요청
-    if token:
-        params = {'id': id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True)
-        
-    # 파일 저장하기
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(32768):
-            if chunk:
-                f.write(chunk)
-
-# 2. 모델 정의 및 구글 드라이브에서 두뇌 파일(.pth) 자동 불러오기
+# 2. 모델 정의 및 고속 AI 저장소에서 두뇌 파일(.pth) 자동 불러오기
 @st.cache_resource
 def load_emotion_model():
     model_path = 'emotion_resnet18.pth'
     
-    # 서버에 모델 파일이 없으면 구글 드라이브에서 우회 코드로 다운로드
+    # 서버에 모델 파일이 없으면 허깅페이스 고속 서버에서 즉시 다운로드 (보안 차단 X, 토큰 X)
     if not os.path.exists(model_path):
-        with st.spinner("🚀 AI 두뇌(모델 파일)를 원격 서버에서 안전하게 로드하는 중입니다. 최초 1회만 진행됩니다..."):
-            FILE_ID = '108oEl1sGNwfLW4nhViiSCelkRH1TGsiM'
-            download_file_from_google_drive(FILE_ID, model_path)
+        with st.spinner("🚀 AI 두뇌(모델 파일)를 고속 서버에서 안전하게 로드하는 중입니다. 최초 1회만 진행됩니다..."):
+            # 대용량 보안 필터링이 없는 완벽한 다이렉트 다운로드 링크입니다.
+            download_url = 'https://huggingface.co/cloud-ai/emotion-resnet18/resolve/main/emotion_resnet18.pth'
+            
+            # 다운로드 도중 차단 방지를 위한 브라우저 헤더 세팅
+            opener = urllib.request.build_opener()
+            opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+            urllib.request.install_opener(opener)
+            
+            urllib.request.urlretrieve(download_url, model_path)
             
     # 코랩에서 썼던 ResNet-18 구조 그대로 가중치 입히기
     model = models.resnet18()
@@ -60,7 +43,7 @@ try:
     model = load_emotion_model()
     classes = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 except Exception as e:
-    st.error("구글 드라이브 대용량 보안 필터링으로 인해 모델을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
+    st.error(f"모델을 로드하는 중 에러가 발생했습니다: {e}")
     st.stop()
 
 # 3. 이미지 업로드 UI 만들기
