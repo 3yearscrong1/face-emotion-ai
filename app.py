@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torchvision import models, transforms
 from PIL import Image
 import numpy as np
-import altair as alt
 import os
 import urllib.request
 import cv2
@@ -15,9 +14,8 @@ from google import genai
 # 1. 페이지 레이아웃 세팅
 st.set_page_config(page_title="AI 표정 인식 & 멘토링 챗봇", layout="wide")
 st.title("🔮 AI 실시간 표정 인식 & Gemini 피드백 시스템")
-st.write("캠을 켜면 AI가 표정을 분석하고, 우측의 제미나이 챗봇이 당신의 감정에 맞는 피드백을 줍니다.")
 
-# 2. 안전하게 인공지능 두뇌(.pth) 다운로드 및 로드
+# 2. 안전하게 인공지능 두뇌(.pth) 로드
 @st.cache_resource
 def load_emotion_model():
     model_path = 'emotion_resnet18.pth'
@@ -38,35 +36,35 @@ def load_emotion_model():
 model = load_emotion_model()
 classes = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 
-# 이미지 전처리 파이프라인
 img_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# 3. Streamlit Secrets 금고에서 안전하게 구글 API 키 가져오기
+# 3. Streamlit Secrets에서 안전하게 구글 API 키 가져오기
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     ai_client = genai.Client(api_key=gemini_key)
 except Exception:
-    st.error("🔑 Streamlit Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다. 설정을 확인해 주세요.")
+    st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
     st.stop()
 
-# 세션 상태(변수 저장소) 초기화
+# 세션 상태 변수 초기화
 if "current_emotion" not in st.session_state:
     st.session_state.current_emotion = "neutral"
 if "chatbot_response" not in st.session_state:
-    st.session_state.chatbot_response = "카메라를 켜면 당신의 표정을 분석하여 챗봇이 다정한 피드백을 시작합니다!"
+    st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 제미나이 멘토링이 시작됩니다!"
 
-# 4. 실시간 웹캠 비디오 프레임 처리 클래스 정의
+# 4. 웹캠 비디오 프레임 처리 클래스 (화질 개선 및 가볍게 조정)
 class EmotionTransformer(VideoTransformerBase):
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # OpenCV를 이용해 실시간 화면을 RGB로 변환 후 모델 예측
+        # 입력받은 프레임을 가볍게 리사이즈하여 버벅임 및 멈춤 현상 원천 방지
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img_rgb)
+        small_img = cv2.resize(img_rgb, (320, 240)) 
+        pil_img = Image.fromarray(small_img)
         
         img_tensor = img_transform(pil_img).unsqueeze(0)
         
@@ -77,54 +75,59 @@ class EmotionTransformer(VideoTransformerBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        if st.session_state.current_emotion != pred_emotion:
-            st.session_state.current_emotion = pred_emotion
+        # 화면이 리렌더링되면서 제미나이를 무한 호출하는 주범을 차단 (단순 텍스트 매칭만 수행)
+        st.session_state.current_emotion = pred_emotion
             
-        # 화면에 예측된 감정 텍스트 띄워주기
-        cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (20, 50), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # 화면에 예측된 감정 출력
+        cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
         
         return img
 
-# 🛠️ [핵심 해결 1] 클라우드 서버 배포 환경에서 웹캠이 정상 구동되도록 구글 공용 STUN 서버 설정 추가
+# STUN 서버 및 해상도 세팅 조정
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
 )
 
-# 5. 화면 레이아웃 분할 (좌측: 캠/그래프, 우측: 제미나이 챗봇 피드백)
+# 5. 화면 레이아웃 분할
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    # RTC 설정을 적용하여 웹캠 스트리머 안정적 가동
+    # RTC 설정 및 미디어 스트림 규격 명시 (버벅임 방지)
     webrtc_streamer(
         key="emotion-streamer", 
         video_transformer_factory=EmotionTransformer,
-        rtc_configuration=RTC_CONFIGURATION
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": {"width": {"ideal": 1280}, "height": {"ideal": 720}}, "audio": False},
+        async_transform=True # 비동기 프레임 드랍 허용하여 실시간 스트리밍 유지
     )
     
     st.write(f"📊 현재 감지된 감정: **{st.session_state.current_emotion.upper()}**")
-    st.caption("팁: 캠 화면 속 표정이 바뀌면 하단의 피드백 요청 버튼을 눌러보세요!")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
+    # 사용자가 마우스로 "클릭할 때만" 딱 한 번 제미나이 API가 호출되도록 격리
     if st.button("🔄 현재 내 표정으로 피드백 받기"):
-        with st.spinner("💭 제미나이가 당신의 표정을 분석하여 답변을 생각하고 있습니다..."):
+        with st.spinner("💭 제미나이가 답변을 생성 중입니다..."):
             try:
                 prompt = f"""
                 사용자의 현재 실시간 표정 분석 결과 감정 상태는 [{st.session_state.current_emotion}] 입니다.
                 이 감정 상태에 맞는 다정한 위로, 공감, 혹은 상황에 맞는 긍정적인 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 해줘.
                 말끝에는 감정에 어울리는 이모지도 섞어줘.
                 """
-                # 🛠️ [핵심 해결 2] 구글의 2026년 최신 공식 라이브러리 표준 모델인 gemini-2.0-flash로 변경
                 response = ai_client.models.generate_content(
                     model='gemini-2.0-flash',
                     contents=prompt
                 )
                 st.session_state.chatbot_response = response.text
             except Exception as e:
-                st.session_state.chatbot_response = f"구글 API 호출 중 오류가 발생했습니다: {e}"
+                # 429 에러 우회 및 안내 텍스트
+                if "429" in str(e):
+                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 10초만 쉬었다가 다시 [피드백 받기] 버튼을 눌러주세요!"
+                else:
+                    st.session_state.chatbot_response = f"오류 발생: {e}"
 
     st.info(st.session_state.current_emotion.upper() + " 상태에 대한 멘토의 조언:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
