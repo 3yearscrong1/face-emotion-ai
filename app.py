@@ -43,7 +43,7 @@ img_transform = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# 3. 구글 API 키 가져오기
+# 3. 구글 API 키 및 클라이언트 초기화
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     ai_client = genai.Client(api_key=gemini_key)
@@ -51,20 +51,20 @@ except Exception:
     st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
     st.stop()
 
-# 세션 상태 변수 안전하게 초기화
+# 세션 상태 변수 안전 초기화
 if "chatbot_response" not in st.session_state:
-    st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 실시간 감정에 맞춘 멘토링이 시작됩니다!"
+    st.session_state.chatbot_response = "아래 버튼을 누르면 실시간 감정에 맞춘 피드백이 즉시 출력됩니다."
+if "last_processed_emotion" not in st.session_state:
+    st.session_state.last_processed_emotion = "NEUTRAL"
 
 # 4. 실시간 웹캠 비디오 프레임 처리 클래스
 class EmotionProcessor(VideoProcessorBase):
     def __init__(self):
-        # 메인 스레드로 감정 데이터를 안전하게 토스하기 위한 통로(큐) 생성
         self.result_queue = queue.Queue()
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # 명암비 자동 보정으로 눈코입 형태 강조
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         equalized = cv2.equalizeHist(gray)
         img_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
@@ -80,7 +80,6 @@ class EmotionProcessor(VideoProcessorBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        # 큐에 쌓인 찌꺼기 데이터를 다 비우고 항상 최신 데이터 1개만 유지
         while not self.result_queue.empty():
             try:
                 self.result_queue.get_nowait()
@@ -88,13 +87,11 @@ class EmotionProcessor(VideoProcessorBase):
                 break
         self.result_queue.put(pred_emotion)
             
-        # 실시간 영상 화면 위에 예측된 감정 레이블 출력
         cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
         
         return frame.from_ndarray(img, format="bgr24")
 
-# STUN 서버 설정
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
 )
@@ -104,7 +101,6 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    # 비디오 컨텍스트 객체 확보
     webrtc_ctx = webrtc_streamer(
         key="live-emotion-streamer", 
         video_processor_factory=EmotionProcessor,
@@ -113,7 +109,6 @@ with col1:
         async_processing=True
     )
     
-    # 🛠️ [핵심 해결] 영상 스레드 내부의 통로(큐)로부터 진짜 최신 실시간 감정 가져오기
     current_emotion = "neutral"
     if webrtc_ctx and webrtc_ctx.video_processor:
         try:
@@ -126,27 +121,30 @@ with col1:
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 버튼을 누르면 영상 스트리밍은 끊기지 않고, 그 순간 전달받은 진짜 실시간 감정으로 피드백 요청
     if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
         with st.spinner(f"💭 {current_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
             try:
                 prompt = f"""
                 사용자의 현재 실시간 표정 분석 상태는 [{current_emotion}] 입니다.
                 이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
-                말끝에는 감정에 어울리는 이모지(예시: 😊, 😭, ☕)를 자연스럽게 섞어줘.
+                말끝에는 감정에 어울리는 이모지를 자연스럽게 섞어줘.
                 """
+                
+                # 🛠️ [핵심 변경] 존재하지 않는 2.5 대신 무조건 작동하는 1.5-flash 표준 모델 사용
                 response = ai_client.models.generate_content(
-                    model='gemini-2.0-flash',
+                    model='gemini-1.5-flash',
                     contents=prompt
                 )
+                
                 st.session_state.chatbot_response = response.text
+                st.session_state.last_processed_emotion = current_emotion.upper()
                 
             except Exception as e:
                 if "429" in str(e):
-                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 5~10초만 대기 후 버튼을 다시 가볍게 눌러주세요!"
+                    st.session_state.chatbot_response = "⚠️ 구글 API 무료 서버 한도 초과! 5초만 대기 후 다시 눌러주세요."
                 else:
-                    st.session_state.chatbot_response = f"연동 중 에러 발생: {e}"
+                    st.session_state.chatbot_response = f"⚠️ 호출 오류 발생: {e}"
 
     # 결과물 출력 영역
-    st.info(f"{current_emotion.upper()} 감정에 대한 멘토의 편지:")
+    st.info(f"{st.session_state.last_processed_emotion} 감정에 대한 멘토의 편지:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
