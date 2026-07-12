@@ -10,6 +10,7 @@ import urllib.request
 import cv2
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 from google import genai
+import queue
 
 # 1. 페이지 레이아웃 세팅
 st.set_page_config(page_title="AI 실시간 표정 인식 & 멘토링 챗봇", layout="wide")
@@ -53,15 +54,17 @@ except Exception:
 # 세션 상태 변수 안전하게 초기화
 if "chatbot_response" not in st.session_state:
     st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 실시간 감정에 맞춘 멘토링이 시작됩니다!"
-if "shared_emotion" not in st.session_state:
-    st.session_state.shared_emotion = "neutral"
 
 # 4. 실시간 웹캠 비디오 프레임 처리 클래스
 class EmotionProcessor(VideoProcessorBase):
+    def __init__(self):
+        # 메인 스레드로 감정 데이터를 안전하게 토스하기 위한 통로(큐) 생성
+        self.result_queue = queue.Queue()
+
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # [인식률 대폭 강화] 명암비 자동 보정으로 눈코입 형태 및 해피 감정선 강조
+        # 명암비 자동 보정으로 눈코입 형태 강조
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         equalized = cv2.equalizeHist(gray)
         img_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
@@ -77,8 +80,13 @@ class EmotionProcessor(VideoProcessorBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        # 버튼 영역에서 읽어갈 수 있도록 전역 세션 상태에 실시간 주입
-        st.session_state.shared_emotion = pred_emotion
+        # 큐에 쌓인 찌꺼기 데이터를 다 비우고 항상 최신 데이터 1개만 유지
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.result_queue.put(pred_emotion)
             
         # 실시간 영상 화면 위에 예측된 감정 레이블 출력
         cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
@@ -96,7 +104,8 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    webrtc_streamer(
+    # 비디오 컨텍스트 객체 확보
+    webrtc_ctx = webrtc_streamer(
         key="live-emotion-streamer", 
         video_processor_factory=EmotionProcessor,
         rtc_configuration=RTC_CONFIGURATION,
@@ -104,21 +113,25 @@ with col1:
         async_processing=True
     )
     
-    # 영상 밑에 현재 감지되고 있는 타겟 텍스트 실시간 노출
-    current_emo = st.session_state.shared_emotion.upper()
-    st.markdown(f"### 📊 현재 감지된 감정: `{current_emo}`")
+    # 🛠️ [핵심 해결] 영상 스레드 내부의 통로(큐)로부터 진짜 최신 실시간 감정 가져오기
+    current_emotion = "neutral"
+    if webrtc_ctx and webrtc_ctx.video_processor:
+        try:
+            current_emotion = webrtc_ctx.video_processor.result_queue.get(timeout=0.1)
+        except queue.Empty:
+            pass
+            
+    st.markdown(f"### 📊 현재 감지된 감정: `{current_emotion.upper()}`")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 버튼을 누르면 영상은 멈추지 않고 그대로 나오며, 누른 순간의 감정만 낚아채서 Gemini 전송
+    # 버튼을 누르면 영상 스트리밍은 끊기지 않고, 그 순간 전달받은 진짜 실시간 감정으로 피드백 요청
     if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
-        target_emotion = st.session_state.shared_emotion
-        
-        with st.spinner(f"💭 {target_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
+        with st.spinner(f"💭 {current_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
             try:
                 prompt = f"""
-                사용자의 현재 실시간 표정 분석 상태는 [{target_emotion}] 입니다.
+                사용자의 현재 실시간 표정 분석 상태는 [{current_emotion}] 입니다.
                 이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
                 말끝에는 감정에 어울리는 이모지(예시: 😊, 😭, ☕)를 자연스럽게 섞어줘.
                 """
@@ -130,10 +143,10 @@ with col2:
                 
             except Exception as e:
                 if "429" in str(e):
-                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 5초만 대기 후 버튼을 다시 가볍게 눌러주세요!"
+                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 5~10초만 대기 후 버튼을 다시 가볍게 눌러주세요!"
                 else:
                     st.session_state.chatbot_response = f"연동 중 에러 발생: {e}"
 
     # 결과물 출력 영역
-    st.info(f"{st.session_state.shared_emotion.upper()} 감정에 대한 멘토의 편지:")
+    st.info(f"{current_emotion.upper()} 감정에 대한 멘토의 편지:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
