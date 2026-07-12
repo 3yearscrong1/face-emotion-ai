@@ -7,6 +7,7 @@ from PIL import Image
 import numpy as np
 import altair as alt
 import os
+import urllib.request
 
 # 1. 페이지 제목 및 레이아웃 설정
 st.set_page_config(page_title="AI 표정 감정 인식기", layout="centered")
@@ -21,18 +22,24 @@ def load_emotion_model():
     # 서버에 모델 파일이 없으면 방금 만든 무적의 깃허브 릴리즈 주소에서 즉시 다운로드
     if not os.path.exists(model_path):
         with st.spinner("🚀 AI 두뇌(모델 파일)를 안전하게 로드하는 중입니다. 최초 1회만 진행됩니다..."):
-            # ⚠️ [필수] 바로 위 2단계에서 복사한 본인의 릴리즈 주소를 아래 따옴표 안에 붙여넣으세요!
-            download_url = 'https://github.com/3yearscrong1/face-emotion-ai/releases/tag/v1.0'
+            download_url = 'https://github.com/3yearscrong1/face-emotion-ai/releases/download/v1.0/emotion_resnet18.pth'
             
-            import urllib.request
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-agent', 'Mozilla/5.0')]
             urllib.request.install_opener(opener)
             urllib.request.urlretrieve(download_url, model_path)
+            
     # 코랩에서 썼던 ResNet-18 구조 그대로 가중치 입히기
     model = models.resnet18()
     model.fc = nn.Linear(model.fc.in_features, 7)
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    
+    # ⚠️ [핵심 수정] 최신 PyTorch 버전의 보안 경고를 우회하기 위해 weights_only=False 추가
+    try:
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=False))
+    except TypeError:
+        # 혹시 모를 구버전 PyTorch 환경 대응용 예외 처리
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        
     model.eval()
     return model
 
