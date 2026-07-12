@@ -13,16 +13,22 @@ st.set_page_config(page_title="AI 표정 감정 인식기", layout="centered")
 st.title("🔮 7개 표정 기반 AI 감정 분석기")
 st.write("당신의 사진을 업로드하면 AI가 실시간으로 감정을 분석합니다.")
 
-# 2. 모델 정의 및 같은 폴더에 저장된 두뇌 파일(.pth) 즉시 불러오기
+# 2. 모델 정의 및 고속 깃허브 서버에서 두뇌 파일(.pth) 자동 불러오기
 @st.cache_resource
 def load_emotion_model():
     model_path = 'emotion_resnet18.pth'
     
-    # 깃허브 안에 파일이 있는지 체크
+    # 서버에 모델 파일이 없으면 방금 만든 무적의 깃허브 릴리즈 주소에서 즉시 다운로드
     if not os.path.exists(model_path):
-        st.error("깃허브 저장소 내부에 'emotion_resnet18.pth' 파일이 존재하지 않습니다. 업로드를 확인해 주세요.")
-        st.stop()
+        with st.spinner("🚀 AI 두뇌(모델 파일)를 안전하게 로드하는 중입니다. 최초 1회만 진행됩니다..."):
+            # ⚠️ [필수] 바로 위 2단계에서 복사한 본인의 릴리즈 주소를 아래 따옴표 안에 붙여넣으세요!
+            download_url = 'https://github.com/3yearscrong1/face-emotion-ai/releases/tag/v1.0'
             
+            import urllib.request
+            opener = urllib.request.build_opener()
+            opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+            urllib.request.install_opener(opener)
+            urllib.request.urlretrieve(download_url, model_path)
     # 코랩에서 썼던 ResNet-18 구조 그대로 가중치 입히기
     model = models.resnet18()
     model.fc = nn.Linear(model.fc.in_features, 7)
