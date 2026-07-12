@@ -55,7 +55,7 @@ except Exception:
 if "detected_emotion" not in st.session_state:
     st.session_state.detected_emotion = "neutral"
 if "chatbot_response" not in st.session_state:
-    st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 제미나이 멘토링이 시작됩니다!"
+    st.session_state.chatbot_response = "★ 시스템이 성공적으로 리셋되었습니다! 버튼을 눌러 피드백을 요청하세요. ★"
 
 # 4. 웹캠 비디오 프레임 처리 클래스 (인식률 대폭 업그레이드)
 class EmotionTransformer(VideoTransformerBase):
@@ -138,3 +138,4 @@ with col2:
     # 결과물 출력 영역
     st.info(f"{st.session_state.detected_emotion.upper()} 감정에 대한 멘토의 편지:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
+    
