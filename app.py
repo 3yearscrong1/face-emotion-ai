@@ -110,4 +110,4 @@ with col2:
                 else:
                     st.error(f"연동 오류 발생: {e}")
     else:
-        st.warning("📸 먼저 왼쪽 카메라 영역에서 [Take Photo] 버튼
+        st.warning("📸 먼저 왼쪽 카메라 영역에서 [Take Photo] 버튼을 눌러 사진을 촬영해 주세요!")
