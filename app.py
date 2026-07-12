@@ -11,6 +11,7 @@ import cv2
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 from google import genai
 import queue
+import time  # 💡 무분별한 연타 방지용 시간 라이브러리 추가
 
 # 1. 페이지 레이아웃 세팅
 st.set_page_config(page_title="AI 실시간 표정 인식 & 멘토링 챗봇", layout="wide")
@@ -51,11 +52,13 @@ except Exception:
     st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
     st.stop()
 
-# 세션 상태 변수 안전 초기화
+# 💡 [핵심] 연타 및 중복 호출 방지를 위한 세션 타임스탬프 초기화
 if "chatbot_response" not in st.session_state:
     st.session_state.chatbot_response = "아래 버튼을 누르면 실시간 감정에 맞춘 피드백이 즉시 출력됩니다."
 if "last_processed_emotion" not in st.session_state:
     st.session_state.last_processed_emotion = "NEUTRAL"
+if "last_call_time" not in st.session_state:
+    st.session_state.last_call_time = 0.0
 
 # 4. 실시간 웹캠 비디오 프레임 처리 클래스
 class EmotionProcessor(VideoProcessorBase):
@@ -122,28 +125,30 @@ with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
     if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
-        with st.spinner(f"💭 {current_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
-            try:
-                prompt = f"""
-                사용자의 현재 실시간 표정 분석 상태는 [{current_emotion}] 입니다.
-                이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
-                말끝에는 감정에 어울리는 이모지를 자연스럽게 섞어줘.
-                """
-                
-                # 🛠️ [정답 매핑] google-genai 라이브러리의 표준 최신 모델명 명시
-                response = ai_client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=prompt
-                )
-                
-                st.session_state.chatbot_response = response.text
-                st.session_state.last_processed_emotion = current_emotion.upper()
-                
-            except Exception as e:
-                if "429" in str(e):
-                    st.session_state.chatbot_response = "⚠️ 구글 API 무료 서버 한도 초과! 5초만 대기 후 다시 눌러주세요."
-                else:
-                    st.session_state.chatbot_response = f"⚠️ 호출 오류 발생: {e}"
+        current_time = time.time()
+        # 💡 [우회책 1] 5초 이내에 연속으로 버튼을 누르면 API 호출을 원천 차단
+        if current_time - st.session_state.last_call_time < 5.0:
+            st.warning("⚠️ 너무 빠르게 버튼을 눌렀습니다! 구글 서버 보호를 위해 5초만 대기 후 눌러주세요.")
+        else:
+            st.session_state.last_call_time = current_time
+            with st.spinner(f"💭 {current_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
+                try:
+                    # 💡 [우회책 2] 프롬프트를 고도로 단순화하여 토큰 소모량 최소화 (무료 한도 절약)
+                    prompt = f"사용자 감정: {current_emotion}. 이 감정에 맞는 짧은 응원 메시지 2문장으로 작성해줘. 이모지 필수."
+                    
+                    response = ai_client.models.generate_content(
+                        model='gemini-2.0-flash',
+                        contents=prompt
+                    )
+                    
+                    st.session_state.chatbot_response = response.text
+                    st.session_state.last_processed_emotion = current_emotion.upper()
+                    
+                except Exception as e:
+                    if "429" in str(e):
+                        st.session_state.chatbot_response = "⚠️ 구글 API 무료 서버 호출 제한에 걸렸습니다. 완전히 풀릴 때까지 약 10초~30초간 창을 그대로 두고 대기해 주세요."
+                    else:
+                        st.session_state.chatbot_response = f"⚠️ 호출 오류 발생: {e}"
 
     # 결과물 출력 영역
     st.info(f"{st.session_state.last_processed_emotion} 감정에 대한 멘토의 편지:")
