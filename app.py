@@ -36,13 +36,14 @@ def load_emotion_model():
 model = load_emotion_model()
 classes = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 
+# 인식을 더 돕기 위한 이미지 변환 규격
 img_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# 3. Streamlit Secrets에서 안전하게 구글 API 키 가져오기
+# 3. 구글 API 키 가져오기
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     ai_client = genai.Client(api_key=gemini_key)
@@ -51,21 +52,23 @@ except Exception:
     st.stop()
 
 # 세션 상태 변수 초기화
-if "current_emotion" not in st.session_state:
-    st.session_state.current_emotion = "neutral"
+if "detected_emotion" not in st.session_state:
+    st.session_state.detected_emotion = "neutral"
 if "chatbot_response" not in st.session_state:
     st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 제미나이 멘토링이 시작됩니다!"
 
-# 4. 웹캠 비디오 프레임 처리 클래스 (화질 개선 및 가볍게 조정)
+# 4. 웹캠 비디오 프레임 처리 클래스 (인식률 대폭 업그레이드)
 class EmotionTransformer(VideoTransformerBase):
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # 입력받은 프레임을 가볍게 리사이즈하여 버벅임 및 멈춤 현상 원천 방지
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        small_img = cv2.resize(img_rgb, (320, 240)) 
-        pil_img = Image.fromarray(small_img)
+        # 🛠️ [인식률 강화] 이미지를 흑백 조절 후 다시 3채널로 복사하여 얼굴 윤곽 강조
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        equalized = cv2.equalizeHist(gray) # 대비 명암비 자동 보정 (눈코입 강조)
+        img_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
         
+        small_img = cv2.resize(img_rgb, (224, 224))
+        pil_img = Image.fromarray(small_img)
         img_tensor = img_transform(pil_img).unsqueeze(0)
         
         with torch.no_grad():
@@ -75,8 +78,8 @@ class EmotionTransformer(VideoTransformerBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        # 화면이 리렌더링되면서 제미나이를 무한 호출하는 주범을 차단 (단순 텍스트 매칭만 수행)
-        st.session_state.current_emotion = pred_emotion
+        # 실시간 세션 전역 변수에 매칭
+        st.session_state.detected_emotion = pred_emotion
             
         # 화면에 예측된 감정 출력
         cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
@@ -84,7 +87,7 @@ class EmotionTransformer(VideoTransformerBase):
         
         return img
 
-# STUN 서버 및 해상도 세팅 조정
+# STUN 서버 설정
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
 )
@@ -94,28 +97,32 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    # RTC 설정 및 미디어 스트림 규격 명시 (버벅임 방지)
     webrtc_streamer(
         key="emotion-streamer", 
         video_transformer_factory=EmotionTransformer,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": {"ideal": 1280}, "height": {"ideal": 720}}, "audio": False},
-        async_transform=True # 비동기 프레임 드랍 허용하여 실시간 스트리밍 유지
+        async_transform=True
     )
     
-    st.write(f"📊 현재 감지된 감정: **{st.session_state.current_emotion.upper()}**")
+    # 실시간 감정 상태 텍스트
+    current_emo = st.session_state.detected_emotion.upper()
+    st.markdown(f"### 📊 현재 감지된 감정: `{current_emo}`")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 사용자가 마우스로 "클릭할 때만" 딱 한 번 제미나이 API가 호출되도록 격리
-    if st.button("🔄 현재 내 표정으로 피드백 받기"):
-        with st.spinner("💭 제미나이가 답변을 생성 중입니다..."):
+    # 버튼 클릭 시 즉시 리프레시 및 호출
+    if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
+        with st.spinner("💭 제미나이가 표정을 분석하고 멘토링 답변을 작성 중입니다..."):
             try:
+                # 무한 루프 차단을 위해 클릭 시점의 감정을 고정 변수로 선언
+                target_emotion = st.session_state.detected_emotion
+                
                 prompt = f"""
-                사용자의 현재 실시간 표정 분석 결과 감정 상태는 [{st.session_state.current_emotion}] 입니다.
-                이 감정 상태에 맞는 다정한 위로, 공감, 혹은 상황에 맞는 긍정적인 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 해줘.
-                말끝에는 감정에 어울리는 이모지도 섞어줘.
+                사용자의 현재 표정 분석 감정 상태는 [{target_emotion}] 입니다.
+                이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
+                말끝에는 감정에 어울리는 이모지(예시: 😊, 😭, ☕)를 자연스럽게 섞어줘.
                 """
                 response = ai_client.models.generate_content(
                     model='gemini-2.0-flash',
@@ -123,11 +130,11 @@ with col2:
                 )
                 st.session_state.chatbot_response = response.text
             except Exception as e:
-                # 429 에러 우회 및 안내 텍스트
                 if "429" in str(e):
-                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 10초만 쉬었다가 다시 [피드백 받기] 버튼을 눌러주세요!"
+                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 제한에 일시적으로 도달했습니다. 5~10초만 완전히 대기한 후 버튼을 다시 가볍게 눌러주세요!"
                 else:
-                    st.session_state.chatbot_response = f"오류 발생: {e}"
+                    st.session_state.chatbot_response = f"연동 오류 발생: {e}"
 
-    st.info(st.session_state.current_emotion.upper() + " 상태에 대한 멘토의 조언:")
+    # 결과물 출력 영역
+    st.info(f"{st.session_state.detected_emotion.upper()} 감정에 대한 멘토의 편지:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
