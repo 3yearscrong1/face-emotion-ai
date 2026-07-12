@@ -46,6 +46,7 @@ img_transform = transforms.Compose([
 # 3. 구글 API 키 및 클라이언트 초기화
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
+    # 구글 최신 genai 클라이언트 생성
     ai_client = genai.Client(api_key=gemini_key)
 except Exception:
     st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
@@ -130,9 +131,9 @@ with col2:
                 말끝에는 감정에 어울리는 이모지를 자연스럽게 섞어줘.
                 """
                 
-                # 🛠️ [핵심 변경] 존재하지 않는 2.5 대신 무조건 작동하는 1.5-flash 표준 모델 사용
+                # 🛠️ [핵심 변경] google-genai 최신 라이브러리 규격 공식 지정 모델명 매핑
                 response = ai_client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model='gemini-2.5-flash',
                     contents=prompt
                 )
                 
