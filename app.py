@@ -10,6 +10,7 @@ import urllib.request
 import cv2
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 from google import genai
+import queue
 
 # 1. 페이지 레이아웃 세팅
 st.set_page_config(page_title="AI 표정 인식 & 멘토링 챗봇", layout="wide")
@@ -36,7 +37,6 @@ def load_emotion_model():
 model = load_emotion_model()
 classes = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
 
-# 인식을 더 돕기 위한 이미지 변환 규격
 img_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -51,20 +51,22 @@ except Exception:
     st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
     st.stop()
 
-# 세션 상태 변수 초기화
-if "detected_emotion" not in st.session_state:
-    st.session_state.detected_emotion = "neutral"
+# 챗봇 답변 저장용 세션 변수
 if "chatbot_response" not in st.session_state:
     st.session_state.chatbot_response = "★ 시스템이 성공적으로 리셋되었습니다! 버튼을 눌러 피드백을 요청하세요. ★"
 
-# 4. 웹캠 비디오 프레임 처리 클래스 (인식률 대폭 업그레이드)
+# 4. 웹캠 비디오 프레임 처리 클래스 (스레드 간 큐 통신 기법 도입)
 class EmotionTransformer(VideoTransformerBase):
+    def __init__(self):
+        # 메인 스레드로 감정 문자열을 안전하게 전달하기 위한 실시간 큐(Queue) 생성
+        self.result_queue = queue.Queue()
+
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # 🛠️ [인식률 강화] 이미지를 흑백 조절 후 다시 3채널로 복사하여 얼굴 윤곽 강조
+        # 명암비 equalization으로 이목구비 인식률 강화
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        equalized = cv2.equalizeHist(gray) # 대비 명암비 자동 보정 (눈코입 강조)
+        equalized = cv2.equalizeHist(gray)
         img_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
         
         small_img = cv2.resize(img_rgb, (224, 224))
@@ -78,8 +80,13 @@ class EmotionTransformer(VideoTransformerBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        # 실시간 세션 전역 변수에 매칭
-        st.session_state.detected_emotion = pred_emotion
+        # 큐가 너무 쌓이지 않도록 기존 찌꺼기 비우고 최신 데이터 전달
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.result_queue.put(pred_emotion)
             
         # 화면에 예측된 감정 출력
         cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
@@ -97,7 +104,8 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    webrtc_streamer(
+    # 비디오 컨텍스트 객체(webrtc_ctx) 확보
+    webrtc_ctx = webrtc_streamer(
         key="emotion-streamer", 
         video_transformer_factory=EmotionTransformer,
         rtc_configuration=RTC_CONFIGURATION,
@@ -105,22 +113,26 @@ with col1:
         async_transform=True
     )
     
-    # 실시간 감정 상태 텍스트
-    current_emo = st.session_state.detected_emotion.upper()
-    st.markdown(f"### 📊 현재 감지된 감정: `{current_emo}`")
+    # 🛠️ [핵심 해결] 영상 스레드에서 생성된 최신 감정 값을 메인 스레드로 안전하게 꺼내오기
+    current_emotion = "neutral"
+    if webrtc_ctx.video_transformer:
+        try:
+            # 비디오 처리 스레드가 던져준 큐에서 값 추출
+            current_emotion = webrtc_ctx.video_transformer.result_queue.get(timeout=0.1)
+        except queue.Empty:
+            pass
+            
+    st.markdown(f"### 📊 현재 감지된 감정: `{current_emotion.upper()}`")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 버튼 클릭 시 즉시 리프레시 및 호출
     if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
         with st.spinner("💭 제미나이가 표정을 분석하고 멘토링 답변을 작성 중입니다..."):
             try:
-                # 무한 루프 차단을 위해 클릭 시점의 감정을 고정 변수로 선언
-                target_emotion = st.session_state.detected_emotion
-                
+                # 동기화된 안전한 감정 변수를 프롬프트에 투입
                 prompt = f"""
-                사용자의 현재 표정 분석 감정 상태는 [{target_emotion}] 입니다.
+                사용자의 현재 표정 분석 감정 상태는 [{current_emotion}] 입니다.
                 이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
                 말끝에는 감정에 어울리는 이모지(예시: 😊, 😭, ☕)를 자연스럽게 섞어줘.
                 """
@@ -136,6 +148,5 @@ with col2:
                     st.session_state.chatbot_response = f"연동 오류 발생: {e}"
 
     # 결과물 출력 영역
-    st.info(f"{st.session_state.detected_emotion.upper()} 감정에 대한 멘토의 편지:")
+    st.info(f"감정에 대한 멘토의 편지:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
-    
