@@ -4,4 +4,6 @@ torchvision
 pillow
 numpy
 altair
-requests
+google-genai
+streamlit-webrtc
+opencv-python-headless
