@@ -8,12 +8,12 @@ import numpy as np
 import os
 import urllib.request
 import cv2
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 from google import genai
 
 # 1. 페이지 레이아웃 세팅
-st.set_page_config(page_title="AI 표정 인식 & 멘토링 챗봇", layout="wide")
+st.set_page_config(page_title="AI 실시간 표정 인식 & 멘토링 챗봇", layout="wide")
 st.title("🔮 AI 실시간 표정 인식 & Gemini 피드백 시스템")
-st.write("카메라 화면에서 사진을 촬영하면, AI가 표정을 분석하고 제미나이 챗봇이 다정한 피드백을 줍니다.")
 
 # 2. 안전하게 인공지능 두뇌(.pth) 로드
 @st.cache_resource
@@ -50,48 +50,75 @@ except Exception:
     st.error("🔑 Streamlit Secrets 설정을 확인해 주세요.")
     st.stop()
 
-# 4. 화면 레이아웃 좌우 분할
+# 세션 상태 변수 안전하게 초기화
+if "chatbot_response" not in st.session_state:
+    st.session_state.chatbot_response = "카메라를 켜고 아래 [🔄 피드백 받기] 버튼을 누르면 실시간 감정에 맞춘 멘토링이 시작됩니다!"
+if "shared_emotion" not in st.session_state:
+    st.session_state.shared_emotion = "neutral"
+
+# 4. 실시간 웹캠 비디오 프레임 처리 클래스
+class EmotionProcessor(VideoProcessorBase):
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        # [인식률 대폭 강화] 명암비 자동 보정으로 눈코입 형태 및 해피 감정선 강조
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        equalized = cv2.equalizeHist(gray)
+        img_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
+        
+        small_img = cv2.resize(img_rgb, (224, 224))
+        pil_img = Image.fromarray(small_img)
+        img_tensor = img_transform(pil_img).unsqueeze(0)
+        
+        with torch.no_grad():
+            outputs = model(img_tensor)
+            probabilities = F.softmax(outputs, dim=1).numpy()[0]
+            
+        max_idx = np.argmax(probabilities)
+        pred_emotion = classes[max_idx]
+        
+        # 버튼 영역에서 읽어갈 수 있도록 전역 세션 상태에 실시간 주입
+        st.session_state.shared_emotion = pred_emotion
+            
+        # 실시간 영상 화면 위에 예측된 감정 레이블 출력
+        cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (40, 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+        
+        return frame.from_ndarray(img, format="bgr24")
+
+# STUN 서버 설정
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
+)
+
+# 5. 화면 레이아웃 분할
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("🎥 실시간 카메라 입력")
-    # Streamlit 공식 내장 고화질 카메라 컴포넌트 가동 (버벅임, 멈춤 절대 없음)
-    camera_image = st.camera_input("분석하고 싶은 표정을 짓고 [Take Photo]를 누르세요")
+    st.subheader("🎥 실시간 웹캠 입력")
+    webrtc_streamer(
+        key="live-emotion-streamer", 
+        video_processor_factory=EmotionProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": {"width": {"ideal": 1280}, "height": {"ideal": 720}}, "audio": False},
+        async_processing=True
+    )
+    
+    # 영상 밑에 현재 감지되고 있는 타겟 텍스트 실시간 노출
+    current_emo = st.session_state.shared_emotion.upper()
+    st.markdown(f"### 📊 현재 감지된 감정: `{current_emo}`")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 사용자가 사진을 촬영(Take Photo)한 순간에만 내부 로직이 딱 1번 실행됨 (429 차단 원천 봉쇄)
-    if camera_image is not None:
-        with st.spinner("💭 AI가 표정을 분석하고 제미나이가 답변을 작성 중입니다..."):
+    # 버튼을 누르면 영상은 멈추지 않고 그대로 나오며, 누른 순간의 감정만 낚아채서 Gemini 전송
+    if st.button("🔄 현재 내 표정으로 피드백 받기", key="trigger_btn"):
+        target_emotion = st.session_state.shared_emotion
+        
+        with st.spinner(f"💭 {target_emotion.upper()} 상태를 기반으로 제미나이가 조언을 작성 중입니다..."):
             try:
-                # 1) 촬영된 이미지를 PIL Image 및 가공 가능한 형태로 변환
-                pil_img = Image.open(camera_image).convert('RGB')
-                img_np = np.array(pil_img)
-                
-                # 2) [인식률 극대화] 명암 보정 필터(Equalization) 적용하여 HAPPY 등 감정선 뚜렷하게 강조
-                gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-                equalized = cv2.equalizeHist(gray)
-                processed_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
-                
-                # 3) 딥러닝 모델 예측 진행
-                final_pil = Image.fromarray(processed_rgb)
-                img_tensor = img_transform(final_pil).unsqueeze(0)
-                
-                with torch.no_grad():
-                    outputs = model(img_tensor)
-                    probabilities = F.softmax(outputs, dim=1).numpy()[0]
-                
-                max_idx = np.argmax(probabilities)
-                detected_emotion = classes[max_idx]
-                confidence = probabilities[max_idx] * 100
-                
-                # 4) 감지 결과 레이블 출력
-                st.success(f"📊 분석 결과: 현재 **{confidence:.2f}%**의 확률로 **[{detected_emotion.upper()}]** 상태입니다.")
-                
-                # 5) 고정된 감정 상태로 Gemini API 깔끔하게 1번 호출
                 prompt = f"""
-                사용자의 현재 표정 분석 감정 상태는 [{detected_emotion}] 입니다.
+                사용자의 현재 실시간 표정 분석 상태는 [{target_emotion}] 입니다.
                 이 감정에 맞는 따뜻한 위로, 공감, 혹은 응원의 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 작성해줘.
                 말끝에는 감정에 어울리는 이모지(예시: 😊, 😭, ☕)를 자연스럽게 섞어줘.
                 """
@@ -99,15 +126,14 @@ with col2:
                     model='gemini-2.0-flash',
                     contents=prompt
                 )
-                
-                # 6) 결과 출력
-                st.info(f"{detected_emotion.upper()} 감정에 대한 멘토의 편지:")
-                st.chat_message("assistant").write(response.text)
+                st.session_state.chatbot_response = response.text
                 
             except Exception as e:
                 if "429" in str(e):
-                    st.error("⚠️ 구글 무료 서버 제한에 도달했습니다. 5초 뒤에 사진을 다시 찍어보세요!")
+                    st.session_state.chatbot_response = "⚠️ 구글 무료 서버 요청량이 일시적으로 초과되었습니다. 5초만 대기 후 버튼을 다시 가볍게 눌러주세요!"
                 else:
-                    st.error(f"연동 오류 발생: {e}")
-    else:
-        st.warning("📸 먼저 왼쪽 카메라 영역에서 [Take Photo] 버튼을 눌러 사진을 촬영해 주세요!")
+                    st.session_state.chatbot_response = f"연동 중 에러 발생: {e}"
+
+    # 결과물 출력 영역
+    st.info(f"{st.session_state.shared_emotion.upper()} 감정에 대한 멘토의 편지:")
+    st.chat_message("assistant").write(st.session_state.chatbot_response)
