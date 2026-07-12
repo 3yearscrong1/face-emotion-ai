@@ -9,10 +9,10 @@ import altair as alt
 import os
 import urllib.request
 import cv2
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 from google import genai
 
-# 1. 페이지 레이아웃 세팅 (넓은 화면으로 좌우 분할)
+# 1. 페이지 레이아웃 세팅
 st.set_page_config(page_title="AI 표정 인식 & 멘토링 챗봇", layout="wide")
 st.title("🔮 AI 실시간 표정 인식 & Gemini 피드백 시스템")
 st.write("캠을 켜면 AI가 표정을 분석하고, 우측의 제미나이 챗봇이 당신의 감정에 맞는 피드백을 줍니다.")
@@ -77,33 +77,38 @@ class EmotionTransformer(VideoTransformerBase):
         max_idx = np.argmax(probabilities)
         pred_emotion = classes[max_idx]
         
-        # 감정이 바뀌었을 때만 세션 상태를 업데이트하여 제미나이 호출 준비
         if st.session_state.current_emotion != pred_emotion:
             st.session_state.current_emotion = pred_emotion
             
-        # 화면에 예측된 감정 텍스트 띄워주기 (OpenCV 서포트)
+        # 화면에 예측된 감정 텍스트 띄워주기
         cv2.putText(img, f"EMOTION: {pred_emotion.upper()}", (20, 50), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
         return img
+
+# 🛠️ [핵심 해결 1] 클라우드 서버 배포 환경에서 웹캠이 정상 구동되도록 구글 공용 STUN 서버 설정 추가
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
 # 5. 화면 레이아웃 분할 (좌측: 캠/그래프, 우측: 제미나이 챗봇 피드백)
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("🎥 실시간 웹캠 입력")
-    # 웹캠 스트리머 가동
-    webrtc_streamer(key="emotion-streamer", video_transformer_factory=EmotionTransformer)
+    # RTC 설정을 적용하여 웹캠 스트리머 안정적 가동
+    webrtc_streamer(
+        key="emotion-streamer", 
+        video_transformer_factory=EmotionTransformer,
+        rtc_configuration=RTC_CONFIGURATION
+    )
     
     st.write(f"📊 현재 감지된 감정: **{st.session_state.current_emotion.upper()}**")
-    
-    # 임의의 시각화 피드백용 (실시간 변동 가이드)
     st.caption("팁: 캠 화면 속 표정이 바뀌면 하단의 피드백 요청 버튼을 눌러보세요!")
 
 with col2:
     st.subheader("🤖 Gemini 감정 케어 멘토")
     
-    # 사용자가 피드백 버튼을 누르면 제미나이 API 호출
     if st.button("🔄 현재 내 표정으로 피드백 받기"):
         with st.spinner("💭 제미나이가 당신의 표정을 분석하여 답변을 생각하고 있습니다..."):
             try:
@@ -112,14 +117,14 @@ with col2:
                 이 감정 상태에 맞는 다정한 위로, 공감, 혹은 상황에 맞는 긍정적인 피드백을 친구처럼 친근한 말투로 딱 2~3문장 이내로 해줘.
                 말끝에는 감정에 어울리는 이모지도 섞어줘.
                 """
+                # 🛠️ [핵심 해결 2] 구글의 2026년 최신 공식 라이브러리 표준 모델인 gemini-2.0-flash로 변경
                 response = ai_client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-2.0-flash',
                     contents=prompt
                 )
                 st.session_state.chatbot_response = response.text
             except Exception as e:
                 st.session_state.chatbot_response = f"구글 API 호출 중 오류가 발생했습니다: {e}"
 
-    # 챗봇 스타일 말풍선 디자인 출력
     st.info(st.session_state.current_emotion.upper() + " 상태에 대한 멘토의 조언:")
     st.chat_message("assistant").write(st.session_state.chatbot_response)
